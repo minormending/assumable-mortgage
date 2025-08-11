@@ -209,22 +209,25 @@ def get_school_data(zpid: str, url: str, fetch: bool) -> list[dict]:
     """Return school info for a ZPID, fetching and caching as needed."""
     cache_dir = Path(".cache") / "schools"
     cache_dir.mkdir(parents=True, exist_ok=True)
-    cache_file = cache_dir / f"{zpid}.json"
+    cache_file = cache_dir / f"{zpid}.html"
+
+    html = ""
     if cache_file.exists():
         try:
             with open(cache_file, "r", encoding="utf-8") as f:
-                return json.load(f).get("schools", [])
+                html = f.read()
         except Exception:
             pass
-    if not fetch:
-        return []
-    _rate_limit()
-    html = _fetch_school_html(url)
     if not html:
-        return []
+        if not fetch:
+            return []
+        _rate_limit()
+        html = _fetch_school_html(url)
+        if not html:
+            return []
+        with open(cache_file, "w", encoding="utf-8") as f:
+            f.write(html)
     schools = _extract_schools_from_html(html)
-    with open(cache_file, "w", encoding="utf-8") as f:
-        json.dump({"schools": schools}, f)
     return schools
 
 
