@@ -128,16 +128,17 @@ def generate_map_from_cache(output_file="map.html"):
                         pass
                 zillow_link = f"https://www.zillow.com/homedetails/{address_link}/{zpid}_zpid/"
 
-                def price_to_color(p):
+                def price_to_category(p):
+                    """Return a user-friendly label and marker color for a cash amount."""
                     if p >= 300_000:
-                        return "red"
-                    if p >= 200_000:
-                        return "lightred"
+                        return "$300k+", "red"
+                    elif p >= 200_000:
+                        return "$200k - $299k", "lightred"
                     elif p >= 100_000:
-                        return "orange"
+                        return "$100k - $199k", "orange"
                     elif p > 0:
-                        return "green"
-                    return "gray"
+                        return "Cash < $100k", "green"
+                    return "Unknown", "gray"
 
                 popup_html = f"""
                 <div style="width:300px">
@@ -153,11 +154,13 @@ def generate_map_from_cache(output_file="map.html"):
                 </div>
                 """
 
+                group, color = price_to_category(price)
                 all_points.append({
                     "lat": float(lat),
                     "lon": float(lon),
                     "popup": popup_html,
-                    "color": price_to_color(price)
+                    "color": color,
+                    "group": group,
                 })
 
     if not all_points:
@@ -167,12 +170,19 @@ def generate_map_from_cache(output_file="map.html"):
     map_center = [all_points[0]["lat"], all_points[0]["lon"]]
     m = folium.Map(location=map_center, zoom_start=11)
 
+    groups = {}
     for pt in all_points:
+        group = groups.setdefault(pt["group"], folium.FeatureGroup(name=pt["group"]))
         folium.Marker(
             location=[pt["lat"], pt["lon"]],
             popup=folium.Popup(pt["popup"], max_width=400),
-            icon=folium.Icon(color=pt["color"], icon="home")
-        ).add_to(m)
+            icon=folium.Icon(color=pt["color"], icon="home"),
+        ).add_to(group)
+
+    for group in groups.values():
+        group.add_to(m)
+
+    folium.LayerControl().add_to(m)
 
     m.save(output_file)
     print(f"Saved map with {len(all_points)} pins to {output_file}")
