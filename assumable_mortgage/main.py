@@ -4,8 +4,10 @@ import argparse
 import time
 import random
 import re
+import atexit
 from dotenv import load_dotenv
 from curl_cffi import requests
+from playwright.sync_api import sync_playwright
 import json
 from pathlib import Path
 import hashlib
@@ -116,24 +118,53 @@ def compute_zillow_link(listing: dict) -> tuple[str | None, str | None]:
 
 _SCHOOL_RATE_LIMIT_SECONDS = 1.5
 _last_school_request: float = 0.0
+_playwright = None
+_browser = None
 
 
-def _rate_limited_request(url: str) -> requests.Response | None:
-    """Perform a rate-limited GET request and return the response."""
+def _close_browser() -> None:
+    global _playwright, _browser
+    if _browser is not None:
+        try:
+            _browser.close()
+        except Exception:
+            pass
+        _browser = None
+    if _playwright is not None:
+        try:
+            _playwright.stop()
+        except Exception:
+            pass
+        _playwright = None
+
+
+def _ensure_browser() -> None:
+    global _playwright, _browser
+    if _browser is None:
+        _playwright = sync_playwright().start()
+        _browser = _playwright.chromium.launch(headless=True)
+        atexit.register(_close_browser)
+
+
+def _rate_limit() -> None:
     global _last_school_request
     now = time.time()
     elapsed = now - _last_school_request
     if elapsed < _SCHOOL_RATE_LIMIT_SECONDS:
         time.sleep(_SCHOOL_RATE_LIMIT_SECONDS - elapsed + random.uniform(0, 0.5))
     _last_school_request = time.time()
+
+
+def _fetch_school_html(url: str) -> str | None:
+    _ensure_browser()
+    page = _browser.new_page()
     try:
-        return requests.get(
-            url,
-            impersonate="chrome110",
-            timeout=30,
-        )
+        page.goto(url, timeout=60_000, wait_until="networkidle")
+        return page.content()
     except Exception:
         return None
+    finally:
+        page.close()
 
 
 def _extract_schools_from_html(html: str) -> list[dict]:
@@ -187,10 +218,11 @@ def get_school_data(zpid: str, url: str, fetch: bool) -> list[dict]:
             pass
     if not fetch:
         return []
-    resp = _rate_limited_request(url)
-    if resp is None or resp.status_code != 200:
+    _rate_limit()
+    html = _fetch_school_html(url)
+    if not html:
         return []
-    schools = _extract_schools_from_html(resp.text)
+    schools = _extract_schools_from_html(html)
     with open(cache_file, "w", encoding="utf-8") as f:
         json.dump({"schools": schools}, f)
     return schools
