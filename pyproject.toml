@@ -1,0 +1,20 @@
+[tool.poetry]
+name = "assumable-mortgage"
+version = "0.1.0"
+description = "Scrapes assumable.io real estate listings and saves them to CSV."
+authors = ["Your Name <you@example.com>"]
+packages = [{ include = "assumable_mortgage" }]
+
+[tool.poetry.dependencies]
+python = "^3.10"
+curl_cffi = {extras = ["http2"], version = "^0.6.2"}
+python-dotenv = "^1.0.1"
+folium = "^0.16.0"
+numpy = "1.26.4"
+
+[tool.poetry.scripts]
+scrape-assumable = "assumable_mortgage.main:main"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
