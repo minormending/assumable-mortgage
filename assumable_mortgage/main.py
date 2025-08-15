@@ -120,7 +120,34 @@ _SCHOOL_RATE_LIMIT_SECONDS = 1.5
 _last_school_request: float = 0.0
 _playwright = None
 _browser = None
+_browser_context = None
 
+# Mapping of .env names to Zillow's actual cookie names
+cookie_map = {
+    "ZILLOW_SID": "ZILLOW_SID",
+    "JSESSIONID": "JSESSIONID",
+    "ZJS_USER_ID": "zjs_user_id",
+    "ZJS_USER_ID_TYPE": "zjs_user_id_type",
+    "LOGINMEMENTO": "loginmemento",
+    "PX3": "_px3",
+    "PXVID": "_pxvid"
+}
+
+def get_env_cookies():
+    cookies = []
+    for env_name, cookie_name in cookie_map.items():
+        value = os.getenv(env_name)
+        if value:
+            cookies.append({
+                "name": cookie_name,
+                "value": value,
+                "domain": ".zillow.com",
+                "path": "/",
+                "httpOnly": False,
+                "secure": True,
+                "sameSite": "Lax"
+            })
+    return cookies
 
 def _close_browser() -> None:
     global _playwright, _browser
@@ -139,10 +166,23 @@ def _close_browser() -> None:
 
 
 def _ensure_browser() -> None:
-    global _playwright, _browser
+    global _playwright, _browser, _browser_context
     if _browser is None:
+        print("Starting Playwright browser...")
         _playwright = sync_playwright().start()
-        _browser = _playwright.chromium.launch(headless=True)
+        _playwright.chromium.launch_persistent_context(
+            user_data_dir=".cache/playwright",
+            headless=True,
+            args=["--disable-web-security", "--disable-features=IsolateOrigins,site-per-process"]
+        )
+        print("Browser started.")
+        _browser = _playwright.chromium.launch(headless=False)
+        print("Browser launched.")
+
+        # Add cookies **before** opening a new page
+        _browser_context = _browser.new_context()
+        _browser_context.add_cookies(get_env_cookies())
+
         atexit.register(_close_browser)
 
 
@@ -157,11 +197,15 @@ def _rate_limit() -> None:
 
 def _fetch_school_html(url: str) -> str | None:
     _ensure_browser()
-    page = _browser.new_page()
+    print(f"Fetching school data from {url}...")
+    page = _browser_context.new_page()
+    print("New page created.")
     try:
         page.goto(url, timeout=60_000, wait_until="networkidle")
+        print("Page loaded, waiting for content...")
         return page.content()
     except Exception:
+        print(f"Failed to fetch {url}: {str(Exception)}")
         return None
     finally:
         page.close()
