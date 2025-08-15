@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 import hashlib
 import folium
+from folium.plugins import TagFilterButton
 
 load_dotenv()
 
@@ -95,6 +96,79 @@ def write_listings_to_csv(listings, filename="listings.csv"):
                 "PhotoLink": item.get("PhotoLink"),
             })
 
+
+def fetch_schools(lat: float, lon: float, distance: int = 18, state: str = "NY") -> dict:
+    """Fetch school data from GreatSchools API and cache the result."""
+    cache_dir = Path(".cache")
+    cache_dir.mkdir(exist_ok=True)
+
+    params = {
+        "state": state,
+        "sort": "rating",
+        "limit": 2000,
+        "url": "/gsr/api/schools",
+        "countsOnly": "false",
+        "level_code": "e,e",
+        "lat": lat,
+        "lon": lon,
+        "distance": distance,
+        "extras": "students_per_teacher,review_summary,saved_schools",
+        "locationType": "state",
+    }
+
+    key = hashlib.md5(json.dumps(params, sort_keys=True).encode("utf-8")).hexdigest()
+    cache_file = cache_dir / f"schools_{key}.json"
+    if cache_file.exists():
+        print("[Cache] Loading schools from cache...")
+        with open(cache_file, "r", encoding="utf-8") as f:
+            result = json.load(f)
+            return result["response"]
+
+    headers = {
+        "user-agent": os.getenv(
+            "GS_USER_AGENT",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36",
+        ),
+    }
+
+    csrf_token = os.getenv("GS_CSRF_TOKEN")
+    if csrf_token:
+        headers["x-csrf-token"] = csrf_token
+
+    cookies = {}
+    csrf_cookie = os.getenv("GS_COOKIE")
+    if csrf_cookie:
+        cookies["csrf_token"] = csrf_cookie
+
+    url = "https://www.greatschools.org/gsr/api/schools"
+    response = requests.get(
+        url,
+        headers=headers,
+        cookies=cookies,
+        params=params,
+        impersonate="chrome110",
+        timeout=30,
+    )
+
+    if response.status_code == 200:
+        result = response.json()
+        with open(cache_file, "w", encoding="utf-8") as f:
+            f.write(
+                json.dumps(
+                    {
+                        "request": {"url": url, "params": params},
+                        "response": result,
+                    },
+                    indent=2,
+                )
+            )
+        return result
+    else:
+        raise RuntimeError(
+            f"School request failed with status: {response.status_code}"
+        )
+
 def generate_map_from_cache(output_file="map.html"):
     cache_dir = Path(".cache")
     all_points = []
@@ -181,6 +255,62 @@ def generate_map_from_cache(output_file="map.html"):
 
     for group in groups.values():
         group.add_to(m)
+
+    # Add schools to the map
+    try:
+        schools = fetch_schools(map_center[0], map_center[1]).get("items", [])
+
+        def rating_to_color(r: int | None) -> str:
+            if r is None:
+                return "gray"
+            if r >= 9:
+                return "darkgreen"
+            if r >= 7:
+                return "green"
+            if r >= 5:
+                return "orange"
+            if r >= 3:
+                return "lightred"
+            return "red"
+
+        tag_set = set()
+        for school in schools:
+            lat = school.get("lat")
+            lon = school.get("lon")
+            if lat is None or lon is None:
+                continue
+
+            rating = school.get("rating")
+            school_type = school.get("schoolType", "unknown")
+            address = school.get("address", {})
+            popup_html = f"""
+            <div style='width:250px'>
+                <strong>{school.get("name", "")}</strong><br>
+                Rating: {rating if rating is not None else 'N/A'}<br>
+                Type: {school_type}<br>
+                {address.get("street1", '')}, {address.get("city", '')}
+            </div>
+            """
+
+            rating_tag = f"rating:{rating if rating is not None else 'N/A'}"
+            type_tag = f"type:{school_type}"
+            tag_set.update({rating_tag, type_tag})
+
+            folium.Marker(
+                location=[lat, lon],
+                popup=folium.Popup(popup_html, max_width=300),
+                icon=folium.Icon(
+                    color=rating_to_color(rating),
+                    icon="graduation-cap",
+                    prefix="fa",
+                ),
+                tags=[rating_tag, type_tag],
+            ).add_to(m)
+
+        if tag_set:
+            TagFilterButton(sorted(tag_set)).add_to(m)
+    except Exception as e:
+        print(f"Failed to add schools: {e}")
 
     folium.LayerControl().add_to(m)
 
