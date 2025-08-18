@@ -13,7 +13,8 @@ folium = "^0.16.0"
 numpy = "1.26.4"
 
 [tool.poetry.scripts]
-scrape-assumable = "assumable_mortgage.main:main"
+assumable = "assumable_mortgage.cli:main"
+scrape-assumable = "assumable_mortgage.cli:main"
 
 [build-system]
 requires = ["poetry-core"]
