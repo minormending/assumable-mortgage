@@ -213,7 +213,13 @@ def _normalize_school_type(school: dict[str, Any]) -> str:
 def _add_schools_layer(
     m: folium.Map, lat: float, lon: float, gs_client: GreatSchoolsClient | None
 ) -> None:
-    """Fetch schools and add markers with tag filters if available."""
+    """Fetch schools and add markers with a rating filter.
+
+    Adds a FeatureGroup named "Schools" containing school markers. Each school
+    marker is tagged with its rating (e.g., "10", "9", ..., "N/A"). A
+    TagFilterButton control is attached to the map to provide a multi-select UI
+    where selected ratings are combined with OR semantics.
+    """
     if not gs_client:
         log.debug("map.schools_skipped", extra={"reason": "no_client"})
         return
@@ -227,6 +233,11 @@ def _add_schools_layer(
 
     log.info("map.schools_loaded", extra={"count": len(schools)})
 
+    # Group schools together and collect available rating tags
+    schools_group = folium.FeatureGroup(name="Schools")
+    rating_tags: set[str] = set()
+    type_tags: set[str] = set()
+
     for school in schools:
         s_lat = school.get("lat")
         s_lon = school.get("lon")
@@ -234,11 +245,16 @@ def _add_schools_layer(
             continue
 
         rating_raw = school.get("rating")
-        rating: int | None = (
-            int(rating_raw) if isinstance(rating_raw, (int, float)) else None
-        )
+        if isinstance(rating_raw, (int, float)):
+            rating: int | None = int(rating_raw)
+        elif isinstance(rating_raw, str) and rating_raw.strip().isdigit():
+            rating = int(rating_raw.strip())
+        else:
+            rating = None
         # Normalize type to stable buckets
         school_type = _normalize_school_type(school)
+        type_tag = school_type
+        type_tags.add(type_tag)
         address = school.get("address", {})
         popup_html = f"""
         <div style='width:250px'>
@@ -248,11 +264,50 @@ def _add_schools_layer(
             {address.get("street1", '')}, {address.get("city", '')}
         </div>
         """
+        # Build rating tag string for filter
+        rating_tag = str(rating) if rating is not None else "N/A"
+        rating_tags.add(rating_tag)
+
+        # Attach `tags` to marker options so TagFilterButton can filter them
         folium.Marker(
             location=[s_lat, s_lon],
             popup=folium.Popup(popup_html, max_width=300),
             icon=folium.Icon(color=_rating_to_color(rating), icon="graduation-cap", prefix="fa"),
-        ).add_to(m)
+            tags=[rating_tag, type_tag],  # consumed by leaflet-tag-filter-button
+        ).add_to(schools_group)
+
+    # Add the schools layer to the map (even if empty to keep controls stable)
+    schools_group.add_to(m)
+
+    # Add a multi-select OR filter for ratings if we have any tags
+    if rating_tags:
+        try:
+            TagFilterButton(
+                data=sorted(rating_tags, key=lambda x: (x == "N/A", -int(x) if x.isdigit() else 0)),
+                icon="fa-filter",
+                clear_text="clear",
+                # Ensure OR semantics when multiple ratings are selected
+                filter_type="or",  # gracefully ignored if plugin version doesn't support it
+                position="topleft",
+            ).add_to(m)
+        except Exception:
+            # If the plugin API differs, fall back silently; the map still works
+            log.exception("map.schools_tagfilter_failed")
+
+    # Add a separate school type filter; within this control selects are OR,
+    # and combined with the ratings control the result is AND (intersection),
+    # because both controls hide non-matching markers independently.
+    if type_tags:
+        try:
+            TagFilterButton(
+                data=sorted(type_tags),
+                icon="fa-school",
+                clear_text="clear",
+                filter_type="or",
+                position="topleft",
+            ).add_to(m)
+        except Exception:
+            log.exception("map.schools_type_tagfilter_failed")
 
     dur_ms = int((time.perf_counter() - start) * 1000)
     log.info(
